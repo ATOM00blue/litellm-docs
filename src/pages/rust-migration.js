@@ -656,6 +656,104 @@ function SectionHeading({id, kicker, title}) {
   );
 }
 
+// AIGatewayBench results for the finished Rust gateway. Every figure is from
+// blog/rust_ai_gateway_benchmarks; do not edit one here without editing it
+// there. Rows are ascending in both panels, so the order is the same in each.
+const BENCHMARK = [
+  {
+    id: 'overhead',
+    label: 'Added latency at p99',
+    unit: 'ms',
+    // 0.7ms against 257.7ms is a 368x spread, so a linear bar would render the
+    // Rust result as a hairline. Widths are log scaled and the axis says so.
+    log: true,
+    rows: [
+      {name: 'LiteLLM Rust', value: 0.7, lead: true},
+      {name: 'Portkey', value: 2.3},
+      {name: 'Bifrost', value: 4.5},
+      {name: 'LiteLLM Python v1', value: 257.7},
+    ],
+  },
+  {
+    id: 'memory',
+    label: 'Maximum memory use',
+    unit: 'MB',
+    rows: [
+      {name: 'LiteLLM Rust', value: 21.8, lead: true},
+      {name: 'Portkey', value: 90.4},
+      {name: 'Bifrost', value: 199.1},
+      {name: 'LiteLLM Python v1', value: 329.5},
+    ],
+  },
+];
+
+// Log widths run from a tenth of a millisecond so the smallest bar still reads
+// as a bar rather than a sliver.
+const LOG_FLOOR = 0.1;
+
+function barWidth(panel, value) {
+  const max = Math.max(...panel.rows.map(row => row.value));
+  if (!panel.log) {
+    return (value / max) * 100;
+  }
+  const floor = Math.log10(LOG_FLOOR);
+  return ((Math.log10(value) - floor) / (Math.log10(max) - floor)) * 100;
+}
+
+function GatewayBenchmark() {
+  return (
+    <section className={styles.section} aria-labelledby="benchmark-title">
+      <SectionHeading id="benchmark-title" kicker="Result" title="The result of the move to Rust" />
+      <p className={styles.sectionLead}>
+        This is where the migration takes us. AIGatewayBench measured four gateways against the
+        same mock server: the Rust gateway, Portkey, Bifrost, and the current Python proxy. The test measured the
+        delay and the memory that each gateway adds.
+      </p>
+      {/* One card per panel. The two use different scales, so they are two
+          measurements rather than one chart cut in half. */}
+      <div className={styles.benchPanels}>
+        {BENCHMARK.map(panel => (
+          <div className={`${styles.chartCard} ${styles.benchPanel}`} key={panel.id}>
+            <p className={styles.benchPanelLabel}>{panel.label}</p>
+            <ul className={styles.benchRows}>
+              {panel.rows.map(row => {
+                // The column height and the label sitting on top of it are the
+                // same percentage, so the reading always rides its own bar.
+                const height = `${barWidth(panel, row.value)}%`;
+                return (
+                  <li className={styles.benchRow} key={row.name}>
+                    <span className={styles.benchTrack}>
+                      <span
+                        className={`${styles.benchValue} ${row.lead ? styles.benchValueLead : ''}`}
+                        style={{bottom: height}}>
+                        {row.value} {panel.unit}
+                      </span>
+                      <span
+                        className={`${styles.benchBar} ${row.lead ? styles.benchBarLead : ''}`}
+                        style={{height}}
+                      />
+                    </span>
+                    <span className={styles.benchName}>{row.name}</span>
+                  </li>
+                );
+              })}
+            </ul>
+            <p className={styles.benchAxis}>
+              {panel.log ? 'Logarithmic scale. A low value is better.' : 'A low value is better.'}
+            </p>
+          </div>
+        ))}
+      </div>
+      <p className={styles.benchNote}>
+        These numbers are the delay the gateway itself adds. Each gateway handled 5000 requests for each endpoint,
+        and p99 is the slowest request in every 100. The{' '}
+        <Link to="/blog/rust-ai-gateway-benchmarks">AIGatewayBench report</Link> gives the full method, the raw data,
+        and the limits of the test.
+      </p>
+    </section>
+  );
+}
+
 function MigrationUpdates() {
   // Collected at build time from every blog post tagged `rust-migration`.
   const {posts = []} = usePluginData('rust-migration-posts') || {};
@@ -692,6 +790,7 @@ export default function RustMigrationPage() {
           <p className={styles.description}>See what already runs on Rust and what is next.</p>
         </header>
         <MigrationTracker />
+        <GatewayBenchmark />
         <MigrationUpdates />
         <Faq />
       </main>
