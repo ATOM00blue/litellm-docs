@@ -10,8 +10,13 @@ export function WorkshopImage({file, ...props}) {
   return <img src={useBaseUrl(`${assetPath}${file}`)} {...props} />;
 }
 
-export function LiteLLMLogo(props) {
-  return <img src={useBaseUrl('/img/brand/litellm-logo-blue.png')} alt="LiteLLM" {...props} />;
+export function LiteLLMLogo({className = '', ...props}) {
+  const blueLogo = useBaseUrl('/img/brand/litellm-logo-blue.png');
+  const whiteLogo = useBaseUrl('/img/brand/litellm-logo-white.png');
+  return <>
+    <img src={blueLogo} alt="LiteLLM" className={`${className} ${styles.brandLight}`} {...props} />
+    <img src={whiteLogo} alt="LiteLLM" className={`${className} ${styles.brandDark}`} {...props} />
+  </>;
 }
 
 export function WorkshopShell({children}) {
@@ -40,7 +45,7 @@ export function WorkshopHero() {
       <p>Work with your preferred agent</p>
       <div className={styles.harnesses} aria-label="Agent options">
         {agents.map(([name, file]) => <div className={styles.harness} key={name}>
-          <WorkshopImage file={file} alt="" width="26" height="26" />
+          <WorkshopImage file={file} className={file === 'hermes-agent.svg' ? styles.monochromeHarness : undefined} alt="" width="26" height="26" />
           <span>{name}</span>
         </div>)}
       </div>
@@ -95,7 +100,7 @@ export function Closing() {
     <div>
       <h2 id="closing-title">Build with the LiteLLM team.</h2>
       <p>Remote for two weeks. Want us at your office for several days? Tell us in the signup form.</p>
-      <p className={styles.signupNote}>Share your first workflow and your stack. We’ll follow up to arrange a 30-minute intake.</p>
+      <p className={styles.signupNote}>Tell us what you hope to achieve. We’ll follow up to arrange a 30-minute intake.</p>
     </div>
     <SignupButton className={styles.signup} />
   </section>;
