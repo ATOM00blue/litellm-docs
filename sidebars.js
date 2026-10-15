@@ -1509,6 +1509,7 @@ const sidebars = {
           "providers/nadir",
           "providers/nano-gpt",
           "providers/nebius",
+          "providers/neosantara",
           "providers/nlp_cloud",
           "providers/novita",
           { type: "doc", id: "providers/nscale", label: "Nscale (EU Sovereign)" },
