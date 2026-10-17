@@ -1525,6 +1525,7 @@ const sidebars = {
           { type: "doc", id: "providers/nscale", label: "Nscale (EU Sovereign)" },
           "providers/nvidia_riva",
           "providers/oci",
+          "providers/openinfer",
           "providers/ovhcloud",
           { type: "category", label: "Perplexity AI", items: [
             "providers/perplexity",
