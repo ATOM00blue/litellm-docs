@@ -9,6 +9,9 @@ import styles from './styles.module.css';
 import {mapCitations} from '../../../search/citations.mjs';
 import {readAnswer} from '../../../search/stream.mjs';
 import {sourceLabel, sourceDetail} from '../../../search/content';
+import {SearchSession} from '../../../search/search-client.mjs';
+import {SearchAnalytics} from '../../../search/search-analytics.mjs';
+import {track} from '../../components/Conversion/shared';
 
 // One owner renders the modal even when the navbar and docs sidebar both mount a trigger.
 const openEvent = 'litellm:open-docs-search';
@@ -56,6 +59,8 @@ export default function SearchBar() {
   const [contentType, setContentType] = useState('all');
   const [resolvedType, setResolvedType] = useState('all');
   const [results, setResults] = useState([]);
+  const [resultSearchId, setResultSearchId] = useState(null);
+  const [visibleCount, setVisibleCount] = useState(25);
   const [selected, setSelected] = useState(0);
   const [loading, setLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
@@ -71,10 +76,17 @@ export default function SearchBar() {
   const [retry, setRetry] = useState(0);
   const input = useRef(null), composer = useRef(null), dialog = useRef(null), worker = useRef(null), latestTurn = useRef(null);
   const requestId = useRef(0), controller = useRef(null), previousFocus = useRef(null);
+  const searchSession = useRef(null);
+  const analytics = useRef(null);
+  if (!analytics.current) analytics.current = new SearchAnalytics({capture: (event, props) => track(event, {
+    ...props, surface: 'dialog', environment: window.location.hostname === 'docs.litellm.ai' ? 'production'
+      : /^(localhost|127\.0\.0\.1|\[::1\])$/.test(window.location.hostname) ? 'local' : 'preview',
+  })});
   const identity = useRef({});
   const traceContext = useRef(undefined);
   const indexUrl = useBaseUrl('/search-index.json');
   const askUrl = useBaseUrl('/api/docs/ask');
+  const rerankUrl = useBaseUrl('/api/docs/search');
   const avatar = {
     light: useBaseUrl('/img/brand/litellm-monogram-blue.svg'),
     dark: useBaseUrl('/img/brand/litellm-monogram-white.svg'),
@@ -82,24 +94,29 @@ export default function SearchBar() {
 
   useEffect(() => {
     setShortcut(/Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ K' : 'Ctrl K');
-    const show = event => {
+    const show = (event, source = 'button') => {
       if (owner) return;
       owner = identity.current;
       previousFocus.current = document.activeElement;
       setMode(event?.detail?.mode || 'search');
+      analytics.current.open(event?.detail?.mode || 'search', event?.detail?.source || source);
       setOpen(true);
     };
     const key = event => {
       if (event.key.toLowerCase() === 'k' && (event.metaKey || event.ctrlKey) && !event.altKey && !event.isComposing) {
-        event.preventDefault(); show();
+        event.preventDefault(); show(undefined, 'keyboard');
       }
     };
     window.addEventListener(openEvent, show);
     window.addEventListener('keydown', key);
+    const pageExit = () => analytics.current.close('page_exit');
+    window.addEventListener('pagehide', pageExit);
     return () => {
       window.removeEventListener(openEvent, show);
       window.removeEventListener('keydown', key);
-      worker.current?.terminate(); controller.current?.abort();
+      window.removeEventListener('pagehide', pageExit);
+      analytics.current.close('unmounted');
+      searchSession.current?.cancel(); worker.current?.terminate(); controller.current?.abort();
       if (owner === identity.current) owner = null;
     };
   }, []);
@@ -127,32 +144,61 @@ export default function SearchBar() {
   }, [pendingQuestion, turns.length, open, mode]);
 
   useEffect(() => {
+    const baseline = (query, type, signal) => new Promise((resolve, reject) => {
+      const id = ++requestId.current;
+      const abort = () => reject(signal.reason);
+      signal.addEventListener('abort', abort, {once: true});
+      if (!worker.current) worker.current = new Worker(new URL('./search.worker.js', import.meta.url));
+      worker.current.onmessage = ({data}) => {
+        if (data.id !== id || signal.aborted) return;
+        signal.removeEventListener('abort', abort);
+        if (data.error) reject(new Error(data.error)); else resolve(data);
+      };
+      worker.current.onerror = () => {
+        signal.removeEventListener('abort', abort);
+        worker.current?.terminate(); worker.current = null;
+        reject(new Error('Search could not load. Please try again.'));
+      };
+      worker.current.postMessage({id, query, indexUrl, type});
+    });
+    searchSession.current = new SearchSession({
+      onBaseline(data, {final = true} = {}) {
+        if (!final) return;
+        setResultSearchId(analytics.current.ready(data, 'local'));
+        setLoading(false); setSearchError(''); setResults(data.results);
+        setResolvedQuery(data.query); setSelected(0);
+      },
+      onRanking() {analytics.current.requested();},
+      onRanked(data) {
+        setResultSearchId(analytics.current.ready(data, 'jev'));
+        setLoading(false); setSearchError(''); setResults(data.results);
+        setResolvedQuery(data.query); setSelected(0);
+      },
+      // The session publishes one final order, using local matches on failure.
+      onRankError() {},
+      onError(message, metrics) {analytics.current.failed(metrics); setLoading(false); setSearchError(message);},
+    }, {searchBaseline: baseline, rerankUrl});
+    return () => searchSession.current.cancel();
+  }, [indexUrl, rerankUrl]);
+
+  useEffect(() => {
     if (!open || mode !== 'search') return;
-    const id = ++requestId.current;
-    setSearchError('');
+    setSearchError(''); setVisibleCount(25);
+    setLoading(Boolean(query.trim()));
+    setResolvedType(contentType);
+    analytics.current.start(query, contentType);
+    searchSession.current.search(query, contentType);
     if (!query.trim()) {
       setLoading(false); setResults([]); setResolvedQuery(''); setSelected(0);
-      return;
     }
-    // Keep the previous matches visible while typing and ignore stale worker replies.
-    setLoading(true);
-    const timeout = setTimeout(() => {
-      if (!worker.current) {
-        worker.current = new Worker(new URL('./search.worker.js', import.meta.url));
-        worker.current.onmessage = ({data}) => {
-          if (data.id !== requestId.current) return;
-          setLoading(false); setSearchError(data.error || ''); setResults(data.results || []);
-          setResolvedQuery(data.query); setResolvedType(data.type); setSelected(0);
-        };
-        worker.current.onerror = () => {
-          setLoading(false); setSearchError('Search could not load. Please try again.');
-          worker.current?.terminate(); worker.current = null;
-        };
-      }
-      worker.current.postMessage({id, query, indexUrl, type: contentType});
-    }, 250);
-    return () => {clearTimeout(timeout); requestId.current += 1;};
-  }, [query, contentType, open, indexUrl, retry, mode]);
+    return () => searchSession.current.cancel();
+  }, [query, contentType, open, indexUrl, rerankUrl, retry, mode]);
+
+  useEffect(() => {
+    if (!open || mode !== 'search' || loading || !resultSearchId) return;
+    const frame = requestAnimationFrame(() => analytics.current.shown(resultSearchId, visibleCount));
+    return () => cancelAnimationFrame(frame);
+  }, [open, mode, loading, resultSearchId, visibleCount]);
 
   function stopAnswer() {
     controller.current?.abort(); setAsking(false);
@@ -161,11 +207,14 @@ export default function SearchBar() {
     setStreamedAnswer(''); setStreamedSources([]);
   }
   function close() {
-    stopAnswer(); requestId.current += 1; setOpen(false);
+    analytics.current.close();
+    stopAnswer(); searchSession.current?.cancel(); setOpen(false);
     if (owner === identity.current) owner = null;
   }
   function changeQuery(value) {setQuery(value);}
   function openAI(question) {
+    analytics.current.emit('mode_changed', {...analytics.current.props(), mode: 'ai'});
+    analytics.current.finish('ask_ai');
     setMode('ai');
     if (typeof question === 'string') ask(question);
 
@@ -207,14 +256,15 @@ export default function SearchBar() {
   function onKeyDown(event) {
     if (event.key === 'Escape') {event.preventDefault(); close();}
     if (mode === 'search' && event.target === input.current) {
-      if (results.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+      if (!loading && results.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
         event.preventDefault();
-        setSelected(current => (current + (event.key === 'ArrowDown' ? 1 : -1) + results.length) % results.length);
+        const count = Math.min(visibleCount, results.length);
+        setSelected(current => (current + (event.key === 'ArrowDown' ? 1 : -1) + count) % count);
       }
       if (event.key === 'Enter') {
         event.preventDefault();
-        if (loading || resolvedQuery !== query || resolvedType !== contentType) return;
-        if (results.length) window.location.assign(results[selected].url);
+        if (loading || resolvedQuery !== query.trim().replace(/\s+/g, ' ').toLowerCase() || resolvedType !== contentType) return;
+        if (results.length) {analytics.current.select(selected, 'keyboard'); window.location.assign(results[selected].url);}
         else openAI(query.trim() || undefined);
       }
     }
@@ -236,7 +286,7 @@ export default function SearchBar() {
     } catch { setCopied(false); }
   }
   const toggle = <div className={styles.tabs} role="group" aria-label="Search mode">
-    <button type="button" aria-pressed={mode === 'search'} onClick={() => setMode('search')}><Search size={12}/>Search</button>
+    <button type="button" aria-pressed={mode === 'search'} onClick={() => {analytics.current.emit('mode_changed', {mode: 'search'}); setMode('search');}}><Search size={12}/>Search</button>
     <button type="button" aria-pressed={mode === 'ai'} onClick={() => openAI()}><Sparkles size={12}/>Ask AI</button>
   </div>;
   const assistantAvatar = <ThemedImage className={styles.avatar} sources={avatar} alt="AI assistant avatar"/>;
@@ -250,8 +300,8 @@ export default function SearchBar() {
           {mode === 'search' ? <><Search className={styles.searchIcon} size={20}/>
             <input ref={input} value={query} maxLength={500} onChange={event => changeQuery(event.target.value)}
               placeholder="Search for anything..." aria-label="Search documentation" aria-controls="docs-search-results"
-              aria-activedescendant={results.length ? `docs-result-${selected}` : undefined}
-              role="combobox" aria-expanded={!!results.length} aria-autocomplete="list"/>
+              aria-activedescendant={!loading && results.length ? `docs-result-${selected}` : undefined}
+              role="combobox" aria-expanded={!!query.trim()} aria-autocomplete="list"/>
           </> : <span className={styles.chatTitle}>Ask LiteLLM AI</span>}
           {toggle}
           <button type="button" className={styles.close} onClick={close} aria-label="Close search"><X size={18}/></button>
@@ -266,15 +316,24 @@ export default function SearchBar() {
               <div className={styles.filters} role="group" aria-label="Content type">
                 {Object.entries({all: 'All', docs: 'Docs', blog: 'Blog', release: 'Releases'}).map(([type, label]) =>
                   <button key={type} type="button" aria-pressed={contentType === type} onClick={() => setContentType(type)}>{label}</button>)}
-                <small role="status">{loading && !results.length ? 'Searching...' : results[0]?.matchType === 'typo' ? 'Closest matches' : ''}</small>
+                <small role="status">{loading ? 'Searching...' : results[0]?.matchType === 'typo' ? 'Closest matches' : `${results.length} results`}</small>
               </div>
-              <div className={styles.results} id="docs-search-results" role="listbox" aria-label="Matching documentation" aria-busy={loading}>{results.map((result, i) => <a key={result.id} id={`docs-result-${i}`} data-result={i} role="option" aria-selected={selected === i}
-                className={`${styles.result} ${selected === i ? styles.selected : ''}`} href={result.url} onMouseEnter={() => setSelected(i)}>
+              <div className={styles.results} id="docs-search-results" role="listbox" aria-label="Matching documentation" aria-busy={loading}>{loading
+                ? Array.from({length: 5}, (_, i) => <div key={i} className={`${styles.result} ${styles.skeleton}`} aria-hidden="true">
+                  <span className={styles.skeletonMeta}/>
+                  <span className={styles.skeletonTitle} style={{width: `${[58, 72, 48, 64, 54][i]}%`}}/>
+                  <span className={styles.skeletonSnippet}/>
+                </div>)
+                : results.slice(0, visibleCount).map((result, i) => <a key={result.id} id={`docs-result-${i}`} data-result={i} role="option" aria-selected={selected === i}
+                className={`${styles.result} ${selected === i ? styles.selected : ''}`} href={result.url} onMouseEnter={() => setSelected(i)}
+                onClick={event => analytics.current.select(i, event.detail === 0 ? 'keyboard' : 'mouse')}
+                onAuxClick={event => {if (event.button === 1) analytics.current.select(i, 'middle_click');}}>
                 <span className={styles.path}><SourceMeta source={result}/></span>
                 <span className={styles.resultTitle}><SourceIcon source={result}/><span><Highlighted text={result.title} terms={result.highlights}/></span></span>
                 <span className={styles.snippet}><Highlighted text={result.snippet} terms={result.highlights}/></span>
                 {selected === i && <CornerDownLeft className={styles.enterIcon} size={16}/>}
               </a>)}</div>
+              {!loading && visibleCount < results.length && <button type="button" className={styles.more} onClick={() => setVisibleCount(count => count + 25)}>Show 25 more</button>}
               {!loading && !searchError && !results.length && <p className={styles.noResults}>No {contentType === 'all' ? 'results' : contentType === 'release' ? 'release notes' : contentType === 'blog' ? 'blog posts' : 'docs'} found for “{query}”. {contentType !== 'all' ? <button onClick={() => setContentType('all')}>Search all content</button> : 'Try fewer words or a feature name.'}</p>}
             </>}
           </div>
