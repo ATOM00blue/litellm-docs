@@ -14,6 +14,8 @@ Decision models answer typed questions about an input and return probabilities i
 
 The [Python SDK](./sdk.md) calls the same models without the proxy, [TypeSafe images and box questions](./typesafe_images.md) covers TypeSafe's opt-in headers, [the Admin UI](./admin_ui.md) adds decision models and tests them in a playground, and [the benchmark](./benchmark.md) compares decision models on agent traces
 
+Extraction models such as Cloudflare Clairic, which fill in typed fields like dates, numbers and lists instead of answering questions, are served on [/v1/extraction](../extraction.md).
+
 ## Use decision models with the LiteLLM proxy {#proxy-setup}
 
 1. Add decision models to `config.yaml`

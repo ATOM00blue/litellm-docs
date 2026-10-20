@@ -1366,6 +1366,7 @@ const sidebars = {
             "decisions/sdk",
           ]
         },
+        "extraction",
         "moderation",
         "ocr",
         {
