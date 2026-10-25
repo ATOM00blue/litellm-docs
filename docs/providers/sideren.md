@@ -37,7 +37,6 @@ Model ids are Sideren's public ids. `GET https://api.sideren.io/v1/models` lists
 | `sideren/@sdn/glm-5.2` | 131k |
 | `sideren/@sdn/deepseek-v4-pro` | 1M |
 | `sideren/@sdn/deepseek-v4-flash` | 1M |
-| `sideren/@sdn/kimi-k3` | 1M |
 | `sideren/@sdn/kimi-k2.7-code` | 131k |
 | `sideren/@sdn/qwen3.8-27b` | 262k |
 | `sideren/gpt-6-sol` | 272k |
